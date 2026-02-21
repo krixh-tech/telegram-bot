@@ -1,3 +1,2 @@
-pyTelegramBotAPI
-qrcode
-pillow
+aiogram==3.4.1
+motor==3.3.2
