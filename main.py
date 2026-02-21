@@ -35,7 +35,8 @@ def load_db():
                 "flipkart": {"name": "FLIPKART 1k Coupon", "price": 100, "min_buy": 1, "stock": []},
                 "shein4k": {"name": "SHEIN 4k Coupon", "price": 50, "min_buy": 2, "stock": []},
                 "shein2k": {"name": "SHEIN 2k Coupon", "price": 30, "min_buy": 3, "stock": []},
-                "gplay": {"name": "Google Play Redeem 1k", "price": 100, "min_buy": 1, "stock": []}
+                "gplay": {"name": "Google Play Redeem 1k", "price": 100, "min_buy": 1, "stock": []},
+                "sheinbot": {"name": "Auto Shein Order Bot", "price": 150, "min_buy": 1, "stock": []} # Naya product add kiya
             }
         }
     try:
@@ -47,7 +48,8 @@ def load_db():
                 "flipkart": {"name": "FLIPKART 1k Coupon", "price": 100, "min_buy": 1, "stock": []},
                 "shein4k": {"name": "SHEIN 4k Coupon", "price": 50, "min_buy": 2, "stock": []},
                 "shein2k": {"name": "SHEIN 2k Coupon", "price": 30, "min_buy": 3, "stock": []},
-                "gplay": {"name": "Google Play Redeem 1k", "price": 100, "min_buy": 1, "stock": []}
+                "gplay": {"name": "Google Play Redeem 1k", "price": 100, "min_buy": 1, "stock": []},
+                "sheinbot": {"name": "Auto Shein Order Bot", "price": 150, "min_buy": 1, "stock": []} # Naya product add kiya
             }}
 
 def save_db(data):
@@ -84,11 +86,13 @@ async def cmd_start(message: types.Message, state: FSMContext):
         db["users"][user_id] = {"username": username}
         save_db(db)
     
+    # Naya button add kiya gaya hai
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🛒 FLIPKART 1k Coupon - ₹100", callback_data="buy_flipkart")],
         [InlineKeyboardButton(text="👗 SHEIN 4k Coupon - ₹50 (Min 2)", callback_data="buy_shein4k")],
         [InlineKeyboardButton(text="👗 SHEIN 2k Coupon - ₹30 (Min 3)", callback_data="buy_shein2k")],
-        [InlineKeyboardButton(text="🎮 Google Play 1k Code - ₹100", callback_data="buy_gplay")]
+        [InlineKeyboardButton(text="🎮 Google Play 1k Code - ₹100", callback_data="buy_gplay")],
+        [InlineKeyboardButton(text="🤖 Auto Shein Order Bot - ₹150", callback_data="buy_sheinbot")] 
     ])
     
     await message.answer(f"Welcome to the Digital Store, @{username}!\nSelect a product to buy:", reply_markup=keyboard)
@@ -216,7 +220,7 @@ async def cmd_addstock(message: types.Message):
     
     args = message.text.split(" ", 2)
     if len(args) < 3:
-        return await message.answer("⚠️ Usage: `/addstock <product_id> <code1,code2,...>`\n\nValid IDs: `flipkart`, `shein4k`, `shein2k`, `gplay`", parse_mode="Markdown")
+        return await message.answer("⚠️ Usage: `/addstock <product_id> <code1,code2,...>`\n\nValid IDs: `flipkart`, `shein4k`, `shein2k`, `gplay`, `sheinbot`", parse_mode="Markdown")
         
     product_id = args[1].lower()
     codes_to_add = [code.strip() for code in args[2].split(",")]
@@ -258,4 +262,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-    
