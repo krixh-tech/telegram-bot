@@ -26,6 +26,7 @@ if not BOT_TOKEN:
 DB_FILE = "database.json"
 
 def load_db():
+    # Agar file nahi hai, toh nayi banao
     if not os.path.exists(DB_FILE):
         return {
             "users": {},
@@ -37,8 +38,17 @@ def load_db():
                 "gplay": {"name": "Google Play Redeem 1k", "price": 100, "min_buy": 1, "stock": []}
             }
         }
-    with open(DB_FILE, "r") as f:
-        return json.load(f)
+    try:
+        with open(DB_FILE, "r") as f:
+            return json.load(f)
+    except Exception:
+        # Agar file corrupt ho jaye toh fix karne ke liye
+        return {"users": {}, "orders": {}, "products": {
+                "flipkart": {"name": "FLIPKART 1k Coupon", "price": 100, "min_buy": 1, "stock": []},
+                "shein4k": {"name": "SHEIN 4k Coupon", "price": 50, "min_buy": 2, "stock": []},
+                "shein2k": {"name": "SHEIN 2k Coupon", "price": 30, "min_buy": 3, "stock": []},
+                "gplay": {"name": "Google Play Redeem 1k", "price": 100, "min_buy": 1, "stock": []}
+            }}
 
 def save_db(data):
     with open(DB_FILE, "w") as f:
@@ -61,13 +71,17 @@ class CheckoutState(StatesGroup):
 # 4. SHOP MENU & COMMANDS
 # ==========================================
 @dp.message(CommandStart())
-async def cmd_start(message: types.Message):
+async def cmd_start(message: types.Message, state: FSMContext):
+    # MAGIC FIX 1: Stuck commands ko clear karega
+    await state.clear() 
+    
     db = load_db()
     user_id = str(message.from_user.id)
+    username = message.from_user.username or "User"
     
-    # Save user
+    # User ko DB mein save karo
     if user_id not in db["users"]:
-        db["users"][user_id] = {"username": message.from_user.username}
+        db["users"][user_id] = {"username": username}
         save_db(db)
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -77,7 +91,7 @@ async def cmd_start(message: types.Message):
         [InlineKeyboardButton(text="🎮 Google Play 1k Code - ₹100", callback_data="buy_gplay")]
     ])
     
-    await message.answer(f"Welcome to the Digital Store, @{message.from_user.username}!\nSelect a product to buy:", reply_markup=keyboard)
+    await message.answer(f"Welcome to the Digital Store, @{username}!\nSelect a product to buy:", reply_markup=keyboard)
 
 @dp.callback_query(F.data.startswith("buy_"))
 async def process_buy(callback_query: types.CallbackQuery, state: FSMContext):
@@ -110,14 +124,15 @@ async def process_buy(callback_query: types.CallbackQuery, state: FSMContext):
 async def handle_screenshot(message: types.Message, state: FSMContext):
     data = await state.get_data()
     file_id = message.photo[-1].file_id
-    order_id = str(uuid.uuid4())[:8] # Generate short order ID
+    order_id = str(uuid.uuid4())[:8]
     
     db = load_db()
     product_name = db["products"][data["product_id"]]["name"]
+    username = message.from_user.username or "User"
     
     db["orders"][order_id] = {
         "user_id": message.from_user.id,
-        "username": message.from_user.username,
+        "username": username,
         "product_id": data["product_id"],
         "product_name": product_name,
         "quantity": data["quantity"],
@@ -133,7 +148,7 @@ async def handle_screenshot(message: types.Message, state: FSMContext):
     
     caption = (f"🚨 **NEW ORDER ALERT** 🚨\n\n"
                f"📝 Order ID: {order_id}\n"
-               f"👤 User: @{message.from_user.username} ({message.from_user.id})\n"
+               f"👤 User: @{username} ({message.from_user.id})\n"
                f"🛍 Product: {product_name}\n"
                f"📦 Qty: {data['quantity']}\n"
                f"💰 Amount: ₹{data['total_price']}")
@@ -163,7 +178,6 @@ async def admin_approve(callback_query: types.CallbackQuery):
     if len(product["stock"]) < order["quantity"]:
         return await callback_query.message.answer(f"⚠️ Insufficient stock for {product['name']}. Please add stock first using /addstock.")
 
-    # Extract codes & update DB
     codes_to_send = product["stock"][:order["quantity"]]
     db["products"][product_id]["stock"] = product["stock"][order["quantity"]:]
     db["orders"][order_id]["status"] = "APPROVED"
@@ -200,7 +214,6 @@ async def cmd_addstock(message: types.Message):
     if message.from_user.id != ADMIN_ID:
         return
     
-    # Usage: /addstock flipkart CODE1,CODE2,CODE3
     args = message.text.split(" ", 2)
     if len(args) < 3:
         return await message.answer("⚠️ Usage: `/addstock <product_id> <code1,code2,...>`\n\nValid IDs: `flipkart`, `shein4k`, `shein2k`, `gplay`", parse_mode="Markdown")
@@ -239,69 +252,10 @@ async def cmd_sendproduct(message: types.Message):
 # 8. RUN BOT
 # ==========================================
 async def main():
+    # MAGIC FIX 2: Yeh line Telegram ko batayegi ki purane latke hue messages delete karo aur fresh start karo
+    await bot.delete_webhook(drop_pending_updates=True) 
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
     asyncio.run(main())
-    if not product_db or len(product_db.get("stock", [])) < order["quantity"]:
-        return await callback_query.message.answer(f"⚠️ Insufficient stock for {order['product_name']}. Please add stock first.")
-
-    stock = product_db["stock"]
-    codes_to_send = stock[:order["quantity"]]
-    remaining_stock = stock[order["quantity"]:]
     
-    await products_col.update_one({"name": order["product_name"]}, {"$set": {"stock": remaining_stock}})
-    await orders_col.update_one({"_id": ObjectId(order_id)}, {"$set": {"status": "APPROVED"}})
-
-    codes_text = "\n".join(codes_to_send)
-    await bot.send_message(
-        order["user_id"], 
-        f"🎉 **Payment Approved!**\n\nHere are your codes for {order['product_name']}:\n\n`{codes_text}`", 
-        parse_mode="Markdown"
-    )
-
-    await callback_query.message.edit_caption(caption=f"✅ **APPROVED & DELIVERED**\nOrder: {order_id}\nTo: {order['user_id']}")
-
-@dp.callback_query(F.data.startswith("reject_"))
-async def admin_reject(callback_query: types.CallbackQuery):
-    if callback_query.from_user.id != ADMIN_ID:
-        return await callback_query.answer("Not authorized.")
-        
-    order_id = callback_query.data.split("_")[1]
-    from bson.objectid import ObjectId
-    
-    order = await orders_col.find_one({"_id": ObjectId(order_id)})
-    await orders_col.update_one({"_id": ObjectId(order_id)}, {"$set": {"status": "REJECTED"}})
-    
-    await bot.send_message(order["user_id"], f"❌ Your payment for {order['product_name']} was rejected.")
-    await callback_query.message.edit_caption(caption=f"❌ **REJECTED**\nOrder: {order_id}")
-
-# ==========================================
-# 6. ADMIN COMMANDS
-# ==========================================
-@dp.message(Command("sendproduct"))
-async def cmd_sendproduct(message: types.Message):
-    if message.from_user.id != ADMIN_ID:
-        return
-        
-    args = message.text.split(" ", 2)
-    if len(args) < 3:
-        return await message.answer("⚠️ Usage: /sendproduct <user_id> <code>")
-        
-    target_user_id = int(args[1])
-    code = args[2]
-    
-    try:
-        await bot.send_message(target_user_id, f"🎁 **You have received a product from Admin!**\n\n`{code}`", parse_mode="Markdown")
-        await message.answer(f"✅ Successfully sent to {target_user_id}")
-    except Exception as e:
-        await message.answer("❌ Failed to send. Maybe the user hasn't started the bot.")
-
-# ==========================================
-# 7. RUN BOT
-# ==========================================
-async def main():
-    await dp.start_polling(bot)
-
-if __name__ == "__main__":
-    asyncio.run(main())
