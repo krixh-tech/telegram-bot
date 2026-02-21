@@ -1,55 +1,74 @@
 import os
-import asyncio
+import json
+import uuid
 import logging
+import asyncio
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart, Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from motor.motor_asyncio import AsyncIOMotorClient
 
 # ==========================================
-# 1. SECURE CONFIGURATION (No hardcoding)
+# 1. CONFIGURATION
 # ==========================================
-# Yeh values ab Railway dashboard se aayengi, code se nahi!
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", 0))  
-MONGO_URI = os.getenv("MONGO_URI")
-UPI_ID = "harshalx11@fam" # Payment ID public rakhna safe hai
+UPI_ID = "harshalx11@fam"
 
-if not BOT_TOKEN or not MONGO_URI:
-    logging.error("Missing ENV variables! Please add them in Railway.")
+if not BOT_TOKEN:
+    logging.error("BOT_TOKEN missing! Add it in Railway Variables.")
     exit(1)
 
 # ==========================================
-# 2. SETUP & DATABASE
+# 2. LOCAL JSON DATABASE SETUP
+# ==========================================
+DB_FILE = "database.json"
+
+def load_db():
+    if not os.path.exists(DB_FILE):
+        return {
+            "users": {},
+            "orders": {},
+            "products": {
+                "flipkart": {"name": "FLIPKART 1k Coupon", "price": 100, "min_buy": 1, "stock": []},
+                "shein4k": {"name": "SHEIN 4k Coupon", "price": 50, "min_buy": 2, "stock": []},
+                "shein2k": {"name": "SHEIN 2k Coupon", "price": 30, "min_buy": 3, "stock": []},
+                "gplay": {"name": "Google Play Redeem 1k", "price": 100, "min_buy": 1, "stock": []}
+            }
+        }
+    with open(DB_FILE, "r") as f:
+        return json.load(f)
+
+def save_db(data):
+    with open(DB_FILE, "w") as f:
+        json.dump(data, f, indent=4)
+
+# ==========================================
+# 3. BOT INITIALIZATION
 # ==========================================
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-client = AsyncIOMotorClient(MONGO_URI)
-db = client.digital_store
-users_col = db.users
-orders_col = db.orders
-products_col = db.products
-
 class CheckoutState(StatesGroup):
     waiting_for_screenshot = State()
-    product_name = State()
+    product_id = State()
     quantity = State()
     total_price = State()
 
 # ==========================================
-# 3. SHOP MENU & COMMANDS
+# 4. SHOP MENU & COMMANDS
 # ==========================================
 @dp.message(CommandStart())
 async def cmd_start(message: types.Message):
-    await users_col.update_one(
-        {"user_id": message.from_user.id},
-        {"$set": {"username": message.from_user.username}},
-        upsert=True
-    )
+    db = load_db()
+    user_id = str(message.from_user.id)
+    
+    # Save user
+    if user_id not in db["users"]:
+        db["users"][user_id] = {"username": message.from_user.username}
+        save_db(db)
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🛒 FLIPKART 1k Coupon - ₹100", callback_data="buy_flipkart")],
@@ -62,26 +81,16 @@ async def cmd_start(message: types.Message):
 
 @dp.callback_query(F.data.startswith("buy_"))
 async def process_buy(callback_query: types.CallbackQuery, state: FSMContext):
-    product_code = callback_query.data.split("_")[1]
+    product_id = callback_query.data.split("_")[1]
+    db = load_db()
     
-    products = {
-        "flipkart": {"name": "FLIPKART 1k Coupon", "price": 100, "min_buy": 1},
-        "shein4k": {"name": "SHEIN 4k Coupon", "price": 50, "min_buy": 2},
-        "shein2k": {"name": "SHEIN 2k Coupon", "price": 30, "min_buy": 3},
-        "gplay": {"name": "Google Play Redeem 1k", "price": 100, "min_buy": 1},
-    }
-    
-    if product_code not in products:
+    if product_id not in db["products"]:
         return await callback_query.answer("Invalid product.")
 
-    prod = products[product_code]
+    prod = db["products"][product_id]
     total_price = prod["price"] * prod["min_buy"]
     
-    await state.update_data(
-        product_name=prod["name"], 
-        quantity=prod["min_buy"], 
-        total_price=total_price
-    )
+    await state.update_data(product_id=product_id, quantity=prod["min_buy"], total_price=total_price)
     await state.set_state(CheckoutState.waiting_for_screenshot)
     
     msg = (f"🛍 **{prod['name']}**\n\n"
@@ -95,24 +104,27 @@ async def process_buy(callback_query: types.CallbackQuery, state: FSMContext):
     await callback_query.answer()
 
 # ==========================================
-# 4. HANDLE PAYMENT SCREENSHOTS
+# 5. HANDLE PAYMENT SCREENSHOTS
 # ==========================================
 @dp.message(CheckoutState.waiting_for_screenshot, F.photo)
 async def handle_screenshot(message: types.Message, state: FSMContext):
     data = await state.get_data()
     file_id = message.photo[-1].file_id
+    order_id = str(uuid.uuid4())[:8] # Generate short order ID
     
-    order_doc = {
+    db = load_db()
+    product_name = db["products"][data["product_id"]]["name"]
+    
+    db["orders"][order_id] = {
         "user_id": message.from_user.id,
         "username": message.from_user.username,
-        "product_name": data["product_name"],
+        "product_id": data["product_id"],
+        "product_name": product_name,
         "quantity": data["quantity"],
         "total_price": data["total_price"],
-        "status": "PENDING",
-        "screenshot_id": file_id
+        "status": "PENDING"
     }
-    result = await orders_col.insert_one(order_doc)
-    order_id = str(result.inserted_id)
+    save_db(db)
     
     admin_kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Approve", callback_data=f"approve_{order_id}")],
@@ -120,18 +132,18 @@ async def handle_screenshot(message: types.Message, state: FSMContext):
     ])
     
     caption = (f"🚨 **NEW ORDER ALERT** 🚨\n\n"
+               f"📝 Order ID: {order_id}\n"
                f"👤 User: @{message.from_user.username} ({message.from_user.id})\n"
-               f"🛍 Product: {data['product_name']}\n"
+               f"🛍 Product: {product_name}\n"
                f"📦 Qty: {data['quantity']}\n"
                f"💰 Amount: ₹{data['total_price']}")
                
     await bot.send_photo(chat_id=ADMIN_ID, photo=file_id, caption=caption, reply_markup=admin_kb, parse_mode="Markdown")
-    
     await message.answer("✅ Payment screenshot received! Please wait while an admin verifies your payment.")
     await state.clear()
 
 # ==========================================
-# 5. ADMIN APPROVAL LOGIC
+# 6. ADMIN APPROVAL LOGIC
 # ==========================================
 @dp.callback_query(F.data.startswith("approve_"))
 async def admin_approve(callback_query: types.CallbackQuery):
@@ -139,14 +151,98 @@ async def admin_approve(callback_query: types.CallbackQuery):
         return await callback_query.answer("Not authorized.")
         
     order_id = callback_query.data.split("_")[1]
-    from bson.objectid import ObjectId
+    db = load_db()
     
-    order = await orders_col.find_one({"_id": ObjectId(order_id)})
-    if not order or order["status"] != "PENDING":
-        return await callback_query.answer("Order already processed.")
+    if order_id not in db["orders"] or db["orders"][order_id]["status"] != "PENDING":
+        return await callback_query.answer("Order already processed or not found.")
 
-    product_db = await products_col.find_one({"name": order["product_name"]})
+    order = db["orders"][order_id]
+    product_id = order["product_id"]
+    product = db["products"][product_id]
     
+    if len(product["stock"]) < order["quantity"]:
+        return await callback_query.message.answer(f"⚠️ Insufficient stock for {product['name']}. Please add stock first using /addstock.")
+
+    # Extract codes & update DB
+    codes_to_send = product["stock"][:order["quantity"]]
+    db["products"][product_id]["stock"] = product["stock"][order["quantity"]:]
+    db["orders"][order_id]["status"] = "APPROVED"
+    save_db(db)
+
+    codes_text = "\n".join(codes_to_send)
+    await bot.send_message(
+        order["user_id"], 
+        f"🎉 **Payment Approved!**\n\nHere are your codes for {order['product_name']}:\n\n`{codes_text}`", 
+        parse_mode="Markdown"
+    )
+    await callback_query.message.edit_caption(caption=f"✅ **APPROVED & DELIVERED**\nOrder: {order_id}\nTo: {order['user_id']}")
+
+@dp.callback_query(F.data.startswith("reject_"))
+async def admin_reject(callback_query: types.CallbackQuery):
+    if callback_query.from_user.id != ADMIN_ID:
+        return await callback_query.answer("Not authorized.")
+        
+    order_id = callback_query.data.split("_")[1]
+    db = load_db()
+    
+    if order_id in db["orders"]:
+        db["orders"][order_id]["status"] = "REJECTED"
+        save_db(db)
+        await bot.send_message(db["orders"][order_id]["user_id"], f"❌ Your payment for {db['orders'][order_id]['product_name']} was rejected.")
+    
+    await callback_query.message.edit_caption(caption=f"❌ **REJECTED**\nOrder: {order_id}")
+
+# ==========================================
+# 7. ADMIN COMMANDS (/addstock & /sendproduct)
+# ==========================================
+@dp.message(Command("addstock"))
+async def cmd_addstock(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    
+    # Usage: /addstock flipkart CODE1,CODE2,CODE3
+    args = message.text.split(" ", 2)
+    if len(args) < 3:
+        return await message.answer("⚠️ Usage: `/addstock <product_id> <code1,code2,...>`\n\nValid IDs: `flipkart`, `shein4k`, `shein2k`, `gplay`", parse_mode="Markdown")
+        
+    product_id = args[1].lower()
+    codes_to_add = [code.strip() for code in args[2].split(",")]
+    
+    db = load_db()
+    if product_id not in db["products"]:
+        return await message.answer("❌ Invalid product ID.")
+        
+    db["products"][product_id]["stock"].extend(codes_to_add)
+    save_db(db)
+    
+    await message.answer(f"✅ Successfully added {len(codes_to_add)} codes to {db['products'][product_id]['name']}.\nTotal Stock: {len(db['products'][product_id]['stock'])}")
+
+@dp.message(Command("sendproduct"))
+async def cmd_sendproduct(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+        
+    args = message.text.split(" ", 2)
+    if len(args) < 3:
+        return await message.answer("⚠️ Usage: /sendproduct <user_id> <code>")
+        
+    target_user_id = int(args[1])
+    code = args[2]
+    
+    try:
+        await bot.send_message(target_user_id, f"🎁 **You have received a product from Admin!**\n\n`{code}`", parse_mode="Markdown")
+        await message.answer(f"✅ Successfully sent to {target_user_id}")
+    except Exception:
+        await message.answer("❌ Failed to send. Maybe the user hasn't started the bot.")
+
+# ==========================================
+# 8. RUN BOT
+# ==========================================
+async def main():
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
     if not product_db or len(product_db.get("stock", [])) < order["quantity"]:
         return await callback_query.message.answer(f"⚠️ Insufficient stock for {order['product_name']}. Please add stock first.")
 
