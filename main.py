@@ -1,3 +1,4 @@
+import os
 import asyncio
 import logging
 from aiogram import Bot, Dispatcher, types, F
@@ -8,13 +9,17 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from motor.motor_asyncio import AsyncIOMotorClient
 
 # ==========================================
-# 1. HARDCODED CONFIGURATION
+# 1. SECURE CONFIGURATION (No hardcoding)
 # ==========================================
-# Yahan apni actual details daalo
-BOT_TOKEN = "8517481377:AAHJ4vF4SXOEuAOqyZkVudU-wiVwO9eJFNU" 
-ADMIN_ID = 7510607171  # Apna Telegram ID integer format mein (bina quotes ke)
-MONGO_URI = "mongodb+srv://xynif:<5%L2.rc@a2#FKXx>@cluster0.vfzuldi.mongodb.net/?appName=Cluster0"
-UPI_ID = "harshalx11@fam"
+# Yeh values ab Railway dashboard se aayengi, code se nahi!
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_ID = int(os.getenv("ADMIN_ID", 0))  
+MONGO_URI = os.getenv("MONGO_URI")
+UPI_ID = "harshalx11@fam" # Payment ID public rakhna safe hai
+
+if not BOT_TOKEN or not MONGO_URI:
+    logging.error("Missing ENV variables! Please add them in Railway.")
+    exit(1)
 
 # ==========================================
 # 2. SETUP & DATABASE
@@ -23,14 +28,12 @@ logging.basicConfig(level=logging.INFO)
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# MongoDB Connection
 client = AsyncIOMotorClient(MONGO_URI)
 db = client.digital_store
 users_col = db.users
 orders_col = db.orders
 products_col = db.products
 
-# States for handling screenshots
 class CheckoutState(StatesGroup):
     waiting_for_screenshot = State()
     product_name = State()
@@ -42,7 +45,6 @@ class CheckoutState(StatesGroup):
 # ==========================================
 @dp.message(CommandStart())
 async def cmd_start(message: types.Message):
-    # Save user to DB
     await users_col.update_one(
         {"user_id": message.from_user.id},
         {"$set": {"username": message.from_user.username}},
@@ -75,7 +77,6 @@ async def process_buy(callback_query: types.CallbackQuery, state: FSMContext):
     prod = products[product_code]
     total_price = prod["price"] * prod["min_buy"]
     
-    # Save order details in memory state
     await state.update_data(
         product_name=prod["name"], 
         quantity=prod["min_buy"], 
@@ -101,7 +102,6 @@ async def handle_screenshot(message: types.Message, state: FSMContext):
     data = await state.get_data()
     file_id = message.photo[-1].file_id
     
-    # Save order to DB
     order_doc = {
         "user_id": message.from_user.id,
         "username": message.from_user.username,
@@ -114,7 +114,6 @@ async def handle_screenshot(message: types.Message, state: FSMContext):
     result = await orders_col.insert_one(order_doc)
     order_id = str(result.inserted_id)
     
-    # Forward to Admin
     admin_kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Approve", callback_data=f"approve_{order_id}")],
         [InlineKeyboardButton(text="❌ Reject", callback_data=f"reject_{order_id}")]
@@ -146,13 +145,11 @@ async def admin_approve(callback_query: types.CallbackQuery):
     if not order or order["status"] != "PENDING":
         return await callback_query.answer("Order already processed.")
 
-    # Fetch product stock
     product_db = await products_col.find_one({"name": order["product_name"]})
     
     if not product_db or len(product_db.get("stock", [])) < order["quantity"]:
         return await callback_query.message.answer(f"⚠️ Insufficient stock for {order['product_name']}. Please add stock first.")
 
-    # Extract codes & update DB
     stock = product_db["stock"]
     codes_to_send = stock[:order["quantity"]]
     remaining_stock = stock[order["quantity"]:]
@@ -160,7 +157,6 @@ async def admin_approve(callback_query: types.CallbackQuery):
     await products_col.update_one({"name": order["product_name"]}, {"$set": {"stock": remaining_stock}})
     await orders_col.update_one({"_id": ObjectId(order_id)}, {"$set": {"status": "APPROVED"}})
 
-    # Auto-deliver to user
     codes_text = "\n".join(codes_to_send)
     await bot.send_message(
         order["user_id"], 
