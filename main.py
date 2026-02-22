@@ -3,6 +3,7 @@ import json
 import uuid
 import logging
 import asyncio
+import urllib.parse  # Naya import QR code URL banane ke liye
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart, Command
 from aiogram.fsm.context import FSMContext
@@ -105,14 +106,25 @@ async def process_buy(callback_query: types.CallbackQuery, state: FSMContext):
     await state.update_data(product_id=product_id, quantity=prod["min_buy"], total_price=total_price)
     await state.set_state(CheckoutState.waiting_for_screenshot)
     
+    # ----------------------------------------
+    # QR CODE GENERATION LOGIC
+    # ----------------------------------------
+    # UPI Link banate hain jisme ID aur exact amount hoga
+    upi_link = f"upi://pay?pa={UPI_ID}&pn=DigitalStore&am={total_price}&cu=INR"
+    # Link ko URL format mein encode karte hain
+    encoded_upi_link = urllib.parse.quote(upi_link)
+    # API ke zariye QR image URL create karte hain
+    qr_image_url = f"https://quickchart.io/qr?text={encoded_upi_link}&size=300"
+    
     msg = (f"🛍 **{prod['name']}**\n\n"
            f"Minimum Buy: {prod['min_buy']}\n"
            f"Total Price: ₹{total_price}\n\n"
            f"💳 **Payment Instructions:**\n"
-           f"1. Pay exactly ₹{total_price} to UPI: `{UPI_ID}`\n"
+           f"1. **Scan the QR Code** above OR pay manually to UPI: `{UPI_ID}`\n"
            f"2. Send the payment screenshot here in this chat.")
     
-    await callback_query.message.answer(msg, parse_mode="Markdown")
+    # Text ki jagah ab Photo (QR code) ke sath message jayega
+    await callback_query.message.answer_photo(photo=qr_image_url, caption=msg, parse_mode="Markdown")
     await callback_query.answer()
 
 # ==========================================
@@ -123,7 +135,6 @@ async def cmd_myorders(message: types.Message):
     db = load_db()
     user_id = message.from_user.id
     
-    # User ke saare orders nikalna
     user_orders = []
     for order_id, order_data in db["orders"].items():
         if order_data["user_id"] == user_id:
@@ -132,12 +143,10 @@ async def cmd_myorders(message: types.Message):
     if not user_orders:
         return await message.answer("🤷‍♂️ You haven't placed any orders yet. Type /start to browse the shop!")
         
-    # Sirf aakhiri 10 orders dikhayenge taaki message bohot bada na ho jaye
     user_orders = list(reversed(user_orders))[:10]
     
     msg_lines = ["📜 **Your Recent Orders:**\n"]
     for oid, order in user_orders:
-        # Status ke hisaab se emoji
         emoji = "⏳" if order["status"] == "PENDING" else "✅" if order["status"] == "APPROVED" else "❌"
         
         msg_lines.append(
@@ -314,4 +323,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-    
+        
