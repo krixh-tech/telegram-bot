@@ -26,7 +26,6 @@ if not BOT_TOKEN:
 DB_FILE = "database.json"
 
 def load_db():
-    # Agar file nahi hai, toh nayi banao
     if not os.path.exists(DB_FILE):
         return {
             "users": {},
@@ -36,20 +35,19 @@ def load_db():
                 "shein4k": {"name": "SHEIN 4k Coupon", "price": 50, "min_buy": 2, "stock": []},
                 "shein2k": {"name": "SHEIN 2k Coupon", "price": 30, "min_buy": 3, "stock": []},
                 "gplay": {"name": "Google Play Redeem 1k", "price": 100, "min_buy": 1, "stock": []},
-                "sheinbot": {"name": "Auto Shein Order Bot", "price": 150, "min_buy": 1, "stock": []} # Naya product add kiya
+                "sheinbot": {"name": "Auto Shein Order Bot", "price": 150, "min_buy": 1, "stock": []} 
             }
         }
     try:
         with open(DB_FILE, "r") as f:
             return json.load(f)
     except Exception:
-        # Agar file corrupt ho jaye toh fix karne ke liye
         return {"users": {}, "orders": {}, "products": {
                 "flipkart": {"name": "FLIPKART 1k Coupon", "price": 100, "min_buy": 1, "stock": []},
                 "shein4k": {"name": "SHEIN 4k Coupon", "price": 50, "min_buy": 2, "stock": []},
                 "shein2k": {"name": "SHEIN 2k Coupon", "price": 30, "min_buy": 3, "stock": []},
                 "gplay": {"name": "Google Play Redeem 1k", "price": 100, "min_buy": 1, "stock": []},
-                "sheinbot": {"name": "Auto Shein Order Bot", "price": 150, "min_buy": 1, "stock": []} # Naya product add kiya
+                "sheinbot": {"name": "Auto Shein Order Bot", "price": 150, "min_buy": 1, "stock": []} 
             }}
 
 def save_db(data):
@@ -74,19 +72,15 @@ class CheckoutState(StatesGroup):
 # ==========================================
 @dp.message(CommandStart())
 async def cmd_start(message: types.Message, state: FSMContext):
-    # MAGIC FIX 1: Stuck commands ko clear karega
     await state.clear() 
-    
     db = load_db()
     user_id = str(message.from_user.id)
     username = message.from_user.username or "User"
     
-    # User ko DB mein save karo
     if user_id not in db["users"]:
         db["users"][user_id] = {"username": username}
         save_db(db)
     
-    # Naya button add kiya gaya hai
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🛒 FLIPKART 1k Coupon - ₹100", callback_data="buy_flipkart")],
         [InlineKeyboardButton(text="👗 SHEIN 4k Coupon - ₹50 (Min 2)", callback_data="buy_shein4k")],
@@ -95,7 +89,7 @@ async def cmd_start(message: types.Message, state: FSMContext):
         [InlineKeyboardButton(text="🤖 Auto Shein Order Bot - ₹150", callback_data="buy_sheinbot")] 
     ])
     
-    await message.answer(f"Welcome to the Digital Store, @{username}!\nSelect a product to buy:", reply_markup=keyboard)
+    await message.answer(f"Welcome to the Digital Store, @{username}!\nSelect a product to buy:\n\n(Type /myorders to check your purchase history)", reply_markup=keyboard)
 
 @dp.callback_query(F.data.startswith("buy_"))
 async def process_buy(callback_query: types.CallbackQuery, state: FSMContext):
@@ -122,7 +116,41 @@ async def process_buy(callback_query: types.CallbackQuery, state: FSMContext):
     await callback_query.answer()
 
 # ==========================================
-# 5. HANDLE PAYMENT SCREENSHOTS
+# 5. USER COMMAND: /myorders
+# ==========================================
+@dp.message(Command("myorders"))
+async def cmd_myorders(message: types.Message):
+    db = load_db()
+    user_id = message.from_user.id
+    
+    # User ke saare orders nikalna
+    user_orders = []
+    for order_id, order_data in db["orders"].items():
+        if order_data["user_id"] == user_id:
+            user_orders.append((order_id, order_data))
+            
+    if not user_orders:
+        return await message.answer("🤷‍♂️ You haven't placed any orders yet. Type /start to browse the shop!")
+        
+    # Sirf aakhiri 10 orders dikhayenge taaki message bohot bada na ho jaye
+    user_orders = list(reversed(user_orders))[:10]
+    
+    msg_lines = ["📜 **Your Recent Orders:**\n"]
+    for oid, order in user_orders:
+        # Status ke hisaab se emoji
+        emoji = "⏳" if order["status"] == "PENDING" else "✅" if order["status"] == "APPROVED" else "❌"
+        
+        msg_lines.append(
+            f"🆔 `{oid}`\n"
+            f"🛍 {order['product_name']} (x{order['quantity']})\n"
+            f"💰 ₹{order['total_price']} | Status: {emoji} {order['status']}\n"
+            f"━━━━━━━━━━━━━━━━━━━━"
+        )
+        
+    await message.answer("\n".join(msg_lines), parse_mode="Markdown")
+
+# ==========================================
+# 6. HANDLE PAYMENT SCREENSHOTS
 # ==========================================
 @dp.message(CheckoutState.waiting_for_screenshot, F.photo)
 async def handle_screenshot(message: types.Message, state: FSMContext):
@@ -158,11 +186,11 @@ async def handle_screenshot(message: types.Message, state: FSMContext):
                f"💰 Amount: ₹{data['total_price']}")
                
     await bot.send_photo(chat_id=ADMIN_ID, photo=file_id, caption=caption, reply_markup=admin_kb, parse_mode="Markdown")
-    await message.answer("✅ Payment screenshot received! Please wait while an admin verifies your payment.")
+    await message.answer("✅ Payment screenshot received! Please wait while an admin verifies your payment. Type /myorders to track status.")
     await state.clear()
 
 # ==========================================
-# 6. ADMIN APPROVAL LOGIC
+# 7. ADMIN APPROVAL LOGIC
 # ==========================================
 @dp.callback_query(F.data.startswith("approve_"))
 async def admin_approve(callback_query: types.CallbackQuery):
@@ -211,8 +239,33 @@ async def admin_reject(callback_query: types.CallbackQuery):
     await callback_query.message.edit_caption(caption=f"❌ **REJECTED**\nOrder: {order_id}")
 
 # ==========================================
-# 7. ADMIN COMMANDS (/addstock & /sendproduct)
+# 8. ADMIN COMMANDS (/stats, /addstock, /sendproduct)
 # ==========================================
+@dp.message(Command("stats"))
+async def cmd_stats(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    db = load_db()
+    total_users = len(db.get("users", {}))
+    
+    approved_orders = [o for o in db["orders"].values() if o["status"] == "APPROVED"]
+    pending_orders = [o for o in db["orders"].values() if o["status"] == "PENDING"]
+    
+    total_revenue = sum(o["total_price"] for o in approved_orders)
+    
+    stock_info = "\n".join([f"📦 {p['name']}: {len(p['stock'])} left" for p in db["products"].values()])
+    
+    stats_msg = (
+        f"📊 **ADMIN DASHBOARD** 📊\n\n"
+        f"👥 Total Users: {total_users}\n"
+        f"🛒 Total Orders: {len(db['orders'])}\n"
+        f"⏳ Pending Approvals: {len(pending_orders)}\n"
+        f"💰 Total Revenue: ₹{total_revenue}\n\n"
+        f"**Current Stock:**\n{stock_info}"
+    )
+    await message.answer(stats_msg, parse_mode="Markdown")
+
 @dp.message(Command("addstock"))
 async def cmd_addstock(message: types.Message):
     if message.from_user.id != ADMIN_ID:
@@ -253,12 +306,12 @@ async def cmd_sendproduct(message: types.Message):
         await message.answer("❌ Failed to send. Maybe the user hasn't started the bot.")
 
 # ==========================================
-# 8. RUN BOT
+# 9. RUN BOT
 # ==========================================
 async def main():
-    # MAGIC FIX 2: Yeh line Telegram ko batayegi ki purane latke hue messages delete karo aur fresh start karo
     await bot.delete_webhook(drop_pending_updates=True) 
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
     asyncio.run(main())
+    
